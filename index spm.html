@@ -1,0 +1,645 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>LC SYSTEM POS, Estoque, PIX</title>
+  <!-- CDN: Tailwind (opcional para layout rápido) -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- CDN: Ícones -->
+  <script src="https://unpkg.com/lucide@latest"></script>
+  <!-- CDN: QRCode -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+  <!-- CDN: Chart.js -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <!-- CDN: QuaggaJS (leitor de código de barras via câmera) -->
+  <script src="https://unpkg.com/quagga@0.12.1/dist/quagga.min.js"></script>
+  <style>
+    /* Aparência geral */
+    body { background: #0b1020; color: #e5e7eb; }
+    .card { background: #111936; border: 1px solid rgba(255,255,255,0.06); border-radius: 1rem; box-shadow: 0 10px 30px rgba(0,0,0,.25); }
+    .input { background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.08); border-radius: .8rem; padding: .7rem 1rem; }
+    .btn { background: linear-gradient(135deg,#4f46e5,#06b6d4); border: none; color: white; font-weight: 600; border-radius: .8rem; padding: .6rem 1rem; }
+    .btn-secondary { background: rgba(255,255,255,0.08); border: 1px solid rgba(255,255,255,0.12); color: #e5e7eb; border-radius: .8rem; padding: .6rem 1rem; }
+    .tab { cursor: pointer; }
+    .tab.active { background: rgba(255,255,255,0.12); }
+    .table { width: 100%; border-collapse: collapse; }
+    .table th, .table td { border-bottom: 1px dashed rgba(255,255,255,.12); padding: .6rem; }
+    .badge { font-size: .75rem; padding: .2rem .5rem; border-radius: .5rem; background: rgba(255,255,255,.08); }
+    .kbd { background: #0f172a; border: 1px solid rgba(255,255,255,0.14); border-bottom-width: 3px; padding: 0 .35rem; border-radius: .35rem; font-size: .75rem; }
+    .grid-auto { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px,1fr)); gap: 1rem; }
+    .scroll { max-height: 360px; overflow: auto; }
+    /* Quagga viewport */
+    #scanner { position: relative; width: 100%; height: 300px; border-radius: 1rem; overflow: hidden; background: #030712; }
+    #scanner video, #scanner canvas { width: 100% !important; height: 100% !important; }
+  </style>
+</head>
+<body class="min-h-screen">
+  <header class="max-w-7xl mx-auto p-4 flex items-center justify-between">
+    <h1 class="text-2xl md:text-3xl font-bold">🛍🛒 𝙇𝘾 𝙎𝙔𝙎𝙏𝙀𝙈  </h1>
+    <div class="flex items-center gap-2">
+      <button id="btnBackup" class="btn-secondary">Exportar Backup</button>
+      <input id="restoreFile" type="file" accept="application/json" class="hidden">
+      <button id="btnRestore" class="btn-secondary">Importar Backup</button>
+    </div>
+  </header>
+
+  <main class="max-w-7xl mx-auto p-4">
+    <!-- Tabs -->
+    <nav class="grid grid-cols-2 md:grid-cols-5 gap-2 mb-4">
+      <button class="tab btn-secondary" data-tab="tab-pos">Caixa (POS)</button>
+      <button class="tab btn-secondary" data-tab="tab-estoque">Produtos & Estoque</button>
+      <button class="tab btn-secondary" data-tab="tab-pix">Pagamentos PIX</button>
+      <button class="tab btn-secondary" data-tab="tab-relatorios">Relatórios</button>
+      <button class="tab btn-secondary" data-tab="tab-config">Configurações</button>
+    </nav>
+
+    <!-- POS -->
+    <section id="tab-pos" class="card p-4 hidden">
+      <div class="grid md:grid-cols-3 gap-4">
+        <div class="md:col-span-2 space-y-4">
+          <div class="grid-auto">
+            <div>
+              <label class="block mb-1">Leitura de Código de Barras</label>
+              <div class="flex gap-2">
+                <input id="barcodeInput" class="input w-full" placeholder="Use o leitor (USB) ou digite e pressione Enter" />
+                <button id="btnCam" class="btn" title="Ativar câmera para leitura">📷 Câmera</button>
+              </div>
+              <p class="text-sm text-gray-300 mt-1">Leitores USB funcionam como teclado. Para câmera do celular/PC, use o botão <span class="kbd">📷</span>.</p>
+              <div id="scanner" class="mt-2 hidden"></div>
+            </div>
+            <div>
+              <label class="block mb-1">Busca por nome</label>
+              <input id="searchInput" class="input w-full" placeholder="Digite parte do nome do produto" />
+            </div>
+          </div>
+
+          <div class="card p-3">
+            <h2 class="font-semibold mb-2">Carrinho</h2>
+            <div class="scroll">
+              <table class="table" id="cartTable">
+                <thead>
+                  <tr>
+                    <th>Código</th>
+                    <th>Produto</th>
+                    <th>Qtd</th>
+                    <th>Preço</th>
+                    <th>Total</th>
+                    <th></th>
+                  </tr>
+                </thead>
+                <tbody></tbody>
+              </table>
+            </div>
+            <div class="flex justify-between items-center mt-3">
+              <div>
+                <span class="badge">Itens: <span id="cartCount">0</span></span>
+                <span class="badge ml-2">Subtotal: R$ <span id="cartSubtotal">0,00</span></span>
+              </div>
+              <div class="flex gap-2">
+                <button id="btnClearCart" class="btn-secondary">Limpar</button>
+                <button id="btnCheckout" class="btn">Finalizar (PIX)</button>
+              </div>
+            </div>
+          </div>
+        </div>
+        <aside class="space-y-3">
+          <div class="card p-3">
+            <h3 class="font-semibold mb-2">Sugestões</h3>
+            <div id="suggestions" class="grid-auto"></div>
+          </div>
+          <div class="card p-3">
+            <h3 class="font-semibold mb-2">Resumo rápido</h3>
+            <p class="text-sm text-gray-300">Faturamento hoje: R$ <span id="sumHoje">0,00</span></p>
+            <p class="text-sm text-gray-300">Vendas hoje: <span id="vendasHoje">0</span></p>
+          </div>
+        </aside>
+      </div>
+    </section>
+
+    <!-- Estoque -->
+    <section id="tab-estoque" class="card p-4 hidden">
+      <div class="grid md:grid-cols-3 gap-4">
+        <div class="md:col-span-1">
+          <h2 class="font-semibold mb-2">Cadastrar / Editar Produto</h2>
+          <div class="space-y-2">
+            <input id="pCodigo" class="input w-full" placeholder="Código de barras (EAN)" />
+            <input id="pNome" class="input w-full" placeholder="Nome" />
+            <input id="pPreco" class="input w-full" placeholder="Preço de venda (ex: 12.50)" />
+            <input id="pCusto" class="input w-full" placeholder="Custo (opcional)" />
+            <input id="pEstoque" class="input w-full" placeholder="Estoque inicial" />
+            <button id="btnSalvarProd" class="btn w-full">Salvar</button>
+            <button id="btnNovoProd" class="btn-secondary w-full">Novo</button>
+          </div>
+        </div>
+        <div class="md:col-span-2">
+          <div class="flex items-center justify-between mb-2">
+            <h2 class="font-semibold">Produtos</h2>
+            <div class="flex gap-2">
+              <input id="filtroProd" class="input" placeholder="Filtrar" />
+              <button id="btnExportCSV" class="btn-secondary">Exportar CSV</button>
+            </div>
+          </div>
+          <div class="scroll">
+            <table class="table" id="prodTable">
+              <thead>
+                <tr>
+                  <th>Código</th><th>Nome</th><th>Preço</th><th>Estoque</th><th></th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- PIX -->
+    <section id="tab-pix" class="card p-4 hidden">
+      <div class="grid md:grid-cols-2 gap-4">
+        <div>
+          <h2 class="font-semibold mb-2">Gerar QR Code PIX</h2>
+          <div class="space-y-2">
+            <input id="pixChave" class="input w-full" placeholder="Chave PIX (CPF/CNPJ/Email/Telefone/Aleatória)" />
+            <input id="pixNome" class="input w-full" placeholder="Nome do Recebedor (máx 25)" />
+            <input id="pixCidade" class="input w-full" placeholder="Cidade (máx 15)" />
+            <input id="pixValor" class="input w-full" placeholder="Valor (ex: 49.90)" />
+            <input id="pixTxid" class="input w-full" placeholder="TXID (até 25, sem espaços)" />
+            <textarea id="pixInfo" class="input w-full" placeholder="Info/descrição (opcional)" rows="2"></textarea>
+            <div class="flex gap-2">
+              <button id="btnGerarPIX" class="btn">Gerar QR</button>
+              <button id="btnCopiarPix" class="btn-secondary">Copiar Código PIX</button>
+            </div>
+          </div>
+          <p class="text-sm text-gray-300 mt-2">Observação: Este gerador segue o padrão BR Code/EMV para cobranças PIX estáticas. Para confirmação automática, é necessário backend e webhook de instituição de pagamento.</p>
+        </div>
+        <div>
+          <div id="qrcode" class="flex items-center justify-center card p-6 min-h-[340px]"></div>
+          <textarea id="pixPayload" class="input w-full mt-3" rows="4" readonly placeholder="Payload PIX gerado aqui..."></textarea>
+        </div>
+      </div>
+    </section>
+
+    <!-- Relatórios -->
+    <section id="tab-relatorios" class="card p-4 hidden">
+      <div class="grid md:grid-cols-2 gap-4">
+        <div class="card p-3">
+          <h3 class="font-semibold mb-2">Vendas (últimos 30 dias)</h3>
+          <canvas id="chartVendas30"></canvas>
+        </div>
+        <div class="card p-3">
+          <h3 class="font-semibold mb-2">Top Produtos (qtd)</h3>
+          <canvas id="chartTopProdutos"></canvas>
+        </div>
+      </div>
+      <div class="mt-4">
+        <h3 class="font-semibold mb-2">Histórico de Vendas</h3>
+        <div class="scroll">
+          <table class="table" id="salesTable">
+            <thead>
+              <tr><th>Data/Hora</th><th>Itens</th><th>Total</th><th>TXID</th></tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- Configurações -->
+    <section id="tab-config" class="card p-4 hidden">
+      <div class="grid md:grid-cols-2 gap-4">
+        <div class="space-y-2">
+          <h2 class="font-semibold mb-2">Empresa / Recebimento PIX</h2>
+          <input id="cfgNome" class="input w-full" placeholder="Nome estabelecimento" />
+          <input id="cfgCidade" class="input w-full" placeholder="Cidade" />
+          <input id="cfgChave" class="input w-full" placeholder="Chave PIX padrão" />
+          <button id="btnSalvarCfg" class="btn">Salvar Configurações</button>
+        </div>
+        <div class="space-y-2">
+          <h2 class="font-semibold mb-2">Modo de Demonstração</h2>
+          <button id="btnSeed" class="btn-secondary">Popular com dados de exemplo</button>
+          <p class="text-sm text-gray-300">Isto adiciona alguns produtos e vendas simuladas para testar o sistema.</p>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="max-w-7xl mx-auto p-4 text-center text-sm text-gray-400">
+    Desenvolvido por <a href="https://wa.me/5538991164548" target="_blank"></a>Lucas NS</a>
+  </footer>
+
+  <script>
+  // ======== Estado & Persistência ========
+  const state = {
+    produtos: JSON.parse(localStorage.getItem('produtos')||'[]'),
+    vendas: JSON.parse(localStorage.getItem('vendas')||'[]'),
+    cfg: JSON.parse(localStorage.getItem('cfg')||'{}'),
+    carrinho: [],
+    scanning: false,
+  };
+  const save = () => {
+    localStorage.setItem('produtos', JSON.stringify(state.produtos));
+    localStorage.setItem('vendas', JSON.stringify(state.vendas));
+    localStorage.setItem('cfg', JSON.stringify(state.cfg));
+    render();
+  };
+
+  // ======== Utilidades ========
+  const brl = v => (Number(v)||0).toLocaleString('pt-BR',{style:'currency',currency:'BRL'}).replace('R$\u00a0','');
+  const nowISO = () => new Date().toISOString();
+  const uid = (len=10) => Math.random().toString(36).slice(2,2+len).toUpperCase();
+
+  // ======== Tabs ========
+  const tabs = document.querySelectorAll('.tab');
+  const sections = ['tab-pos','tab-estoque','tab-pix','tab-relatorios','tab-config'];
+  const showTab = id => {
+    sections.forEach(s=>document.getElementById(s).classList.add('hidden'));
+    document.getElementById(id).classList.remove('hidden');
+    tabs.forEach(t=>t.classList.remove('active'));
+    document.querySelector(`.tab[data-tab="${id}"]`).classList.add('active');
+    if(id==='tab-relatorios') drawCharts();
+  };
+  tabs.forEach(t=>t.addEventListener('click',()=>showTab(t.dataset.tab)));
+
+  // ======== Produtos & Estoque ========
+  function findProduto(codigo){ return state.produtos.find(p=>p.codigo===String(codigo)); }
+  function upsertProduto(p){
+    const i = state.produtos.findIndex(x=>x.codigo===p.codigo);
+    if(i>=0) state.produtos[i]=p; else state.produtos.push(p);
+    save();
+  }
+  function delProduto(codigo){ state.produtos = state.produtos.filter(p=>p.codigo!==codigo); save(); }
+
+  // ======== Carrinho / POS ========
+  function addToCartByCode(code){
+    const p = findProduto(code);
+    if(!p){ alert('Produto não encontrado: '+code); return; }
+    const item = state.carrinho.find(i=>i.codigo===code);
+    if(item){ item.qtd++; }
+    else { state.carrinho.push({ codigo:p.codigo, nome:p.nome, preco:Number(p.preco)||0, qtd:1 }); }
+    renderCart();
+  }
+  function changeQty(code,delta){
+    const item = state.carrinho.find(i=>i.codigo===code);
+    if(!item) return;
+    item.qtd += delta;
+    if(item.qtd<=0) state.carrinho = state.carrinho.filter(i=>i.codigo!==code);
+    renderCart();
+  }
+  function clearCart(){ state.carrinho=[]; renderCart(); }
+  function cartTotals(){
+    const itens = state.carrinho.reduce((s,i)=>s+i.qtd,0);
+    const subtotal = state.carrinho.reduce((s,i)=>s+i.qtd*i.preco,0);
+    return {itens, subtotal};
+  }
+
+  // ======== PIX Payload (BR Code) ========
+  // Implementação simples para cobrança estática conforme BACEN/EMV
+  function emv(id, value){
+    const val = String(value||'');
+    const len = (val.length).toString().padStart(2,'0');
+    return id+len+val;
+  }
+  function crc16(payload){
+    // CRC-16/CCITT-FALSE
+    let crc = 0xFFFF;
+    for(let i=0;i<payload.length;i++){
+      crc ^= payload.charCodeAt(i) << 8;
+      for(let j=0;j<8;j++){
+        if(crc & 0x8000) crc = (crc<<1) ^ 0x1021; else crc <<= 1;
+        crc &= 0xFFFF;
+      }
+    }
+    return crc.toString(16).toUpperCase().padStart(4,'0');
+  }
+  function gerarPix(chave, nome, cidade, valor, txid, info){
+    // IDs EMV (00 formato, 26 merchant account info, 52 merchant category, 53 moeda, 54 valor, 58 país, 59 nome, 60 cidade, 62 adicionais)
+    const gui = emv('00','BR.GOV.BCB.PIX');
+    const chaveField = emv('01', chave);
+    const infoField = info? emv('02', info) : '';
+    const mai = emv('26', gui + chaveField + infoField);
+    const mpm = emv('00','01'); // payload format indicator
+    const mcc = emv('52','0000');
+    const moeda = emv('53','986');
+    const v = valor? emv('54', String(Number(valor).toFixed(2))) : '';
+    const pais = emv('58','BR');
+    const nm = emv('59', (nome||'').slice(0,25));
+    const cid = emv('60', (cidade||'').slice(0,15));
+    const ad = emv('62', (txid? emv('05', txid.slice(0,25)) : ''));
+    const semCRC = mpm + '01'+'02' + mai + mcc + moeda + v + pais + nm + cid + ad + '63'+'04';
+    const crc = crc16(semCRC);
+    return semCRC + crc;
+  }
+
+  // ======== UI Rendering ========
+  function renderProdutos(){
+    const tbody = document.querySelector('#prodTable tbody');
+    const filtro = (document.getElementById('filtroProd').value||'').toLowerCase();
+    tbody.innerHTML = '';
+    state.produtos
+      .filter(p=> p.codigo.includes(filtro) || p.nome.toLowerCase().includes(filtro))
+      .sort((a,b)=>a.nome.localeCompare(b.nome,'pt-BR'))
+      .forEach(p=>{
+        const tr = document.createElement('tr');
+        tr.innerHTML = `
+          <td class="font-mono">${p.codigo}</td>
+          <td>${p.nome}</td>
+          <td>R$ ${brl(p.preco)}</td>
+          <td>${p.estoque||0}</td>
+          <td class="text-right">
+            <button class="btn-secondary mr-2" data-edit="${p.codigo}">Editar</button>
+            <button class="btn-secondary" data-del="${p.codigo}">Excluir</button>
+          </td>`;
+        tbody.appendChild(tr);
+      });
+    // ações
+    tbody.querySelectorAll('[data-edit]').forEach(b=>b.onclick=()=>{
+      const p = findProduto(b.dataset.edit);
+      document.getElementById('pCodigo').value = p.codigo;
+      document.getElementById('pNome').value = p.nome;
+      document.getElementById('pPreco').value = p.preco;
+      document.getElementById('pCusto').value = p.custo||'';
+      document.getElementById('pEstoque').value = p.estoque||0;
+    });
+    tbody.querySelectorAll('[data-del]').forEach(b=>b.onclick=()=>{
+      if(confirm('Excluir produto?')) delProduto(b.dataset.del);
+    });
+  }
+
+  function renderCart(){
+    const tbody = document.querySelector('#cartTable tbody');
+    tbody.innerHTML='';
+    state.carrinho.forEach(i=>{
+      const tr = document.createElement('tr');
+      tr.innerHTML = `
+        <td class="font-mono">${i.codigo}</td>
+        <td>${i.nome}</td>
+        <td>
+          <div class="flex items-center gap-2">
+            <button class="btn-secondary" data-dec="${i.codigo}">-</button>
+            <span>${i.qtd}</span>
+            <button class="btn-secondary" data-inc="${i.codigo}">+</button>
+          </div>
+        </td>
+        <td>R$ ${brl(i.preco)}</td>
+        <td>R$ ${brl(i.qtd*i.preco)}</td>
+        <td><button class="btn-secondary" data-rem="${i.codigo}">Remover</button></td>`;
+      tbody.appendChild(tr);
+    });
+    tbody.querySelectorAll('[data-dec]').forEach(b=>b.onclick=()=>changeQty(b.dataset.dec,-1));
+    tbody.querySelectorAll('[data-inc]').forEach(b=>b.onclick=()=>changeQty(b.dataset.inc,1));
+    tbody.querySelectorAll('[data-rem]').forEach(b=>b.onclick=()=>{ changeQty(b.dataset.rem, -9999) });
+    const {itens, subtotal} = cartTotals();
+    document.getElementById('cartCount').textContent = itens;
+    document.getElementById('cartSubtotal').textContent = brl(subtotal);
+  }
+
+  function renderSugestoes(){
+    const wrap = document.getElementById('suggestions');
+    wrap.innerHTML='';
+    state.produtos.slice(0,8).forEach(p=>{
+      const card = document.createElement('button');
+      card.className = 'btn-secondary text-left p-3 rounded-xl';
+      card.innerHTML = `<div class="font-semibold">${p.nome}</div><div class="text-sm text-gray-300">R$ ${brl(p.preco)}</div>`;
+      card.onclick=()=>addToCartByCode(p.codigo);
+      wrap.appendChild(card);
+    });
+  }
+
+  function renderSalesTable(){
+    const tbody = document.querySelector('#salesTable tbody');
+    tbody.innerHTML='';
+    state.vendas.slice().reverse().forEach(v=>{
+      const tr = document.createElement('tr');
+      const total = v.itens.reduce((s,i)=>s+i.preco*i.qtd,0);
+      tr.innerHTML = `<td>${new Date(v.data).toLocaleString('pt-BR')}</td>
+        <td>${v.itens.map(i=>`${i.nome} x${i.qtd}`).join(', ')}</td>
+        <td>R$ ${brl(total)}</td>
+        <td class="font-mono">${v.txid||''}</td>`;
+      tbody.appendChild(tr);
+    });
+  }
+
+  function resumoHoje(){
+    const hoje = new Date().toISOString().slice(0,10);
+    const vendashj = state.vendas.filter(v=>v.data.slice(0,10)===hoje);
+    const total = vendashj.reduce((s,v)=>s+v.itens.reduce((a,i)=>a+i.preco*i.qtd,0),0);
+    document.getElementById('sumHoje').textContent = brl(total);
+    document.getElementById('vendasHoje').textContent = vendashj.length;
+  }
+
+  function render(){
+    renderProdutos();
+    renderCart();
+    renderSugestoes();
+    renderSalesTable();
+    resumoHoje();
+  }
+
+  // ======== Charts ========
+  let chart1, chart2;
+  function drawCharts(){
+    const ctx1 = document.getElementById('chartVendas30');
+    const ctx2 = document.getElementById('chartTopProdutos');
+    // Vendas últimos 30 dias
+    const days = [...Array(30)].map((_,i)=>{
+      const d = new Date(); d.setDate(d.getDate() - (29-i));
+      return d.toISOString().slice(0,10);
+    });
+    const vals = days.map(d=>{
+      return state.vendas.filter(v=>v.data.slice(0,10)===d)
+        .reduce((s,v)=>s+v.itens.reduce((a,i)=>a+i.preco*i.qtd,0),0);
+    });
+    chart1 && chart1.destroy();
+    chart1 = new Chart(ctx1,{type:'line',data:{labels:days.map(d=>d.slice(5)),datasets:[{label:'R$ por dia',data:vals, tension:.25}]}});
+
+    // Top produtos por quantidade
+    const map = {};
+    state.vendas.forEach(v=>v.itens.forEach(i=>{ map[i.nome]=(map[i.nome]||0)+i.qtd; }));
+    const top = Object.entries(map).sort((a,b)=>b[1]-a[1]).slice(0,10);
+    chart2 && chart2.destroy();
+    chart2 = new Chart(ctx2,{type:'bar',data:{labels:top.map(t=>t[0]),datasets:[{label:'Quantidade',data:top.map(t=>t[1])}]}});
+  }
+
+  // ======== Eventos UI ========
+  document.getElementById('pPreco').addEventListener('input', e=> e.target.value=e.target.value.replace(',','.'));
+  document.getElementById('pCusto').addEventListener('input', e=> e.target.value=e.target.value.replace(',','.'));
+
+  document.getElementById('btnSalvarProd').onclick = ()=>{
+    const p = {
+      codigo: document.getElementById('pCodigo').value.trim(),
+      nome: document.getElementById('pNome').value.trim(),
+      preco: Number(document.getElementById('pPreco').value),
+      custo: Number(document.getElementById('pCusto').value)||0,
+      estoque: Number(document.getElementById('pEstoque').value)||0,
+    };
+    if(!p.codigo||!p.nome||!p.preco){ alert('Preencha código, nome e preço.'); return; }
+    upsertProduto(p);
+    alert('Produto salvo!');
+  };
+  document.getElementById('btnNovoProd').onclick = ()=>{
+    ['pCodigo','pNome','pPreco','pCusto','pEstoque'].forEach(id=>document.getElementById(id).value='');
+  };
+  document.getElementById('filtroProd').addEventListener('input', renderProdutos);
+
+  // Export CSV
+  document.getElementById('btnExportCSV').onclick = ()=>{
+    const header = 'codigo;nome;preco;custo;estoque\n';
+    const lines = state.produtos.map(p=>[p.codigo,p.nome,p.preco,p.custo||0,p.estoque||0].join(';')).join('\n');
+    const blob = new Blob([header+lines], {type:'text/csv;charset=utf-8;'});
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a'); a.href=url; a.download='produtos.csv'; a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  // POS Inputs
+  document.getElementById('barcodeInput').addEventListener('keydown', e=>{
+    if(e.key==='Enter'){
+      const code = e.target.value.trim();
+      if(code){ addToCartByCode(code); e.target.value=''; }
+    }
+  });
+  document.getElementById('searchInput').addEventListener('input', e=>{
+    const q = e.target.value.toLowerCase();
+    const resultados = state.produtos.filter(p=>p.nome.toLowerCase().includes(q)).slice(0,5);
+    const wrap = document.getElementById('suggestions');
+    wrap.innerHTML='';
+    resultados.forEach(p=>{
+      const btn = document.createElement('button'); btn.className='btn-secondary p-2 rounded-xl';
+      btn.textContent = `${p.nome} — R$ ${brl(p.preco)}`; btn.onclick=()=>addToCartByCode(p.codigo);
+      wrap.appendChild(btn);
+    });
+  });
+
+  // Câmera (Quagga)
+  const scannerEl = document.getElementById('scanner');
+  document.getElementById('btnCam').onclick = async ()=>{
+    if(state.scanning){ Quagga.stop(); scannerEl.classList.add('hidden'); state.scanning=false; return; }
+    try{
+      scannerEl.classList.remove('hidden');
+      Quagga.init({
+        inputStream: { name:"Live", type:"LiveStream", target: scannerEl, constraints:{ facingMode:"environment" } },
+        decoder: { readers: ["ean_reader","ean_8_reader","code_128_reader","upc_reader","upc_e_reader"] },
+        locate: true
+      }, err=>{
+        if(err){ alert('Erro ao iniciar câmera: '+err); scannerEl.classList.add('hidden'); return; }
+        Quagga.start(); state.scanning=true;
+      });
+      Quagga.onDetected(data=>{
+        const code = data.codeResult.code;
+        if(code){ addToCartByCode(code); Quagga.stop(); scannerEl.classList.add('hidden'); state.scanning=false; }
+      });
+    }catch(e){ alert('Permissão negada ou câmera indisponível.'); }
+  };
+
+  // Checkout (gera PIX com total do carrinho)
+  document.getElementById('btnCheckout').onclick = ()=>{
+    const {subtotal} = cartTotals();
+    if(subtotal<=0){ alert('Carrinho vazio'); return; }
+    const nome = state.cfg.nome || document.getElementById('pixNome').value || 'LOJA';
+    const cidade = state.cfg.cidade || document.getElementById('pixCidade').value || 'CIDADE';
+    const chave = state.cfg.chave || document.getElementById('pixChave').value;
+    if(!chave){ alert('Configure uma CHAVE PIX em Configurações ou na aba PIX.'); return; }
+    const txid = 'POS'+uid(8);
+    const payload = gerarPix(chave, nome, cidade, subtotal, txid, 'Compra no caixa');
+    document.getElementById('pixChave').value = chave;
+    document.getElementById('pixNome').value = nome;
+    document.getElementById('pixCidade').value = cidade;
+    document.getElementById('pixValor').value = subtotal.toFixed(2);
+    document.getElementById('pixTxid').value = txid;
+    document.getElementById('pixInfo').value = 'Compra no caixa';
+    showTab('tab-pix');
+    // Render QR
+    const qrDiv = document.getElementById('qrcode'); qrDiv.innerHTML='';
+    new QRCode(qrDiv, { text: payload, width: 260, height: 260 });
+    document.getElementById('pixPayload').value = payload;
+
+    // Simula confirmação manual de pagamento
+    if(confirm('Gerado QR PIX. Após receber o pagamento, deseja concluir a venda e baixar o estoque?')){
+      concluirVenda(txid);
+    }
+  };
+
+  function concluirVenda(txid){
+    // Baixa estoque
+    state.carrinho.forEach(i=>{
+      const p = findProduto(i.codigo); if(p){ p.estoque = (p.estoque||0) - i.qtd; }
+    });
+    state.vendas.push({ data: nowISO(), itens: JSON.parse(JSON.stringify(state.carrinho)), txid });
+    state.carrinho=[]; save(); alert('Venda concluída!'); showTab('tab-pos');
+  }
+
+  // PIX manual
+  document.getElementById('btnGerarPIX').onclick = ()=>{
+    const chave = document.getElementById('pixChave').value.trim();
+    const nome = document.getElementById('pixNome').value.trim();
+    const cidade = document.getElementById('pixCidade').value.trim();
+    const valor = document.getElementById('pixValor').value.trim();
+    const txid = (document.getElementById('pixTxid').value.trim()||uid(10)).slice(0,25);
+    const info = document.getElementById('pixInfo').value.trim();
+    if(!chave||!nome||!cidade){ alert('Preencha chave, nome e cidade.'); return; }
+    const payload = gerarPix(chave,nome,cidade,valor,txid,info);
+    const qrDiv = document.getElementById('qrcode'); qrDiv.innerHTML='';
+    new QRCode(qrDiv, { text: payload, width: 260, height: 260 });
+    document.getElementById('pixPayload').value = payload;
+  };
+  document.getElementById('btnCopiarPix').onclick = async ()=>{
+    const txt = document.getElementById('pixPayload').value;
+    if(!txt) return; await navigator.clipboard.writeText(txt); alert('Código PIX copiado!');
+  };
+
+  // Configurações
+  document.getElementById('btnSalvarCfg').onclick = ()=>{
+    state.cfg = {
+      nome: document.getElementById('cfgNome').value.trim(),
+      cidade: document.getElementById('cfgCidade').value.trim(),
+      chave: document.getElementById('cfgChave').value.trim(),
+    }; save(); alert('Configurações salvas!');
+  };
+
+  // Seed demo
+  document.getElementById('btnSeed').onclick = ()=>{
+    if(!confirm('Popular com dados de exemplo?')) return;
+    state.produtos = [
+      {codigo:'7891000055123', nome:'Arroz 5kg', preco:22.90, custo:18.00, estoque:50},
+      {codigo:'7891234567890', nome:'Feijão 1kg', preco:9.50, custo:6.80, estoque:80},
+      {codigo:'7891111111111', nome:'Açúcar 1kg', preco:4.20, custo:3.10, estoque:100},
+      {codigo:'7892222222222', nome:'Café 500g', preco:15.90, custo:12.00, estoque:40},
+      {codigo:'7893333333333', nome:'Óleo 900ml', preco:8.70, custo:6.20, estoque:60},
+      {codigo:'7894444444444', nome:'Leite 1L', preco:4.80, custo:3.60, estoque:120},
+      {codigo:'7895555555555', nome:'Macarrão 500g', preco:3.90, custo:2.80, estoque:70},
+      {codigo:'7896666666666', nome:'Detergente 500ml', preco:2.99, custo:1.80, estoque:90},
+    ];
+    state.vendas = [];
+    save();
+  };
+
+  // Backup/Restore
+  document.getElementById('btnBackup').onclick = ()=>{
+    const blob = new Blob([JSON.stringify({produtos:state.produtos,vendas:state.vendas,cfg:state.cfg},null,2)],{type:'application/json'});
+    const url = URL.createObjectURL(blob); const a = document.createElement('a');
+    a.href=url; a.download='backup-supermercado.json'; a.click(); URL.revokeObjectURL(url);
+  };
+  document.getElementById('btnRestore').onclick = ()=> document.getElementById('restoreFile').click();
+  document.getElementById('restoreFile').addEventListener('change', async (e)=>{
+    const file = e.target.files[0]; if(!file) return;
+    const txt = await file.text();
+    try{
+      const data = JSON.parse(txt);
+      state.produtos = data.produtos||[]; state.vendas = data.vendas||[]; state.cfg = data.cfg||{}; save(); alert('Backup restaurado!');
+    }catch(err){ alert('Arquivo inválido.'); }
+  });
+
+  // Inicializar
+  (function init(){
+    // Restaurar config nos inputs
+    document.getElementById('cfgNome').value = state.cfg.nome||'';
+    document.getElementById('cfgCidade').value = state.cfg.cidade||'';
+    document.getElementById('cfgChave').value = state.cfg.chave||'';
+    showTab('tab-pos');
+    render();
+    lucide.createIcons();
+  })();
+  </script>
+</body>
+</html>
